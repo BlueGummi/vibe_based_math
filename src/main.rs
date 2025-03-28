@@ -5,8 +5,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const SQRT_TIMES: usize = 100;
 const SQUARE_TIMES: usize = 100;
-const SQRT_TRAINING_LOOPS: usize = 50000;
-const SQUARE_TRAINING_LOOPS: usize = 50000;
+const SQRT_TRAINING_LOOPS: usize = 200000;
+const SQUARE_TRAINING_LOOPS: usize = 200000;
 const SQRT_LEARNING_RATE: f64 = 4.0;
 const SQUARE_LEARNING_RATE: f64 = 6.0;
 const TEST_COUNT: usize = 50;
