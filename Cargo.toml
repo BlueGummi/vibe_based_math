@@ -1,0 +1,11 @@
+[package]
+name = "nnet"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+chrono = "0.4.40"
+colored = "3.0.0"
+indicatif = "0.17.11"
+num_cpus = "1.16.0"
+rand = "0.9.0"
