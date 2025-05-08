@@ -338,11 +338,7 @@ fn linear(a: f64) -> f64 {
 }
 
 fn threshold(a: f64) -> f64 {
-    if a > 0.0 {
-        1.0
-    } else {
-        0.0
-    }
+    if a > 0.0 { 1.0 } else { 0.0 }
 }
 
 fn print_loading_bar(progress: f64) {
@@ -413,7 +409,8 @@ fn main() {
     let num_threads = num_cpus::get();
 
     let pb = ProgressBar::new(
-        ((SQUARE_TRAINING_LOOPS / num_threads + SQRT_TRAINING_LOOPS / num_threads) * num_threads) as u64,
+        ((SQUARE_TRAINING_LOOPS / num_threads + SQRT_TRAINING_LOOPS / num_threads) * num_threads)
+            as u64,
     );
     pb.set_style(
         ProgressStyle::default_bar()
@@ -475,44 +472,80 @@ fn main() {
     final_net1.average_from(&nets1_results);
     final_net2.average_from(&nets2_results);
 
-    for test in test.iter().take(TEST_COUNT) {
-        let curr_elem = test;
-        let est_sqrt = final_net1.run(&[*curr_elem])[0] * SQRT_TIMES as f64;
-        let actual_sqrt = curr_elem.sqrt();
-        let diff_sqrt = (abs_diff(est_sqrt, actual_sqrt) / ((est_sqrt + actual_sqrt) / 2.)) * 100.;
+    loop {
+        println!("\nChoose an option:");
+        println!("1. Estimate square root");
+        println!("2. Estimate square");
+        print!("3. Exit\n{} ", ">".green());
+        std::io::stdout().flush().unwrap();
+        let mut choice = String::new();
+        std::io::stdin()
+            .read_line(&mut choice)
+            .expect("Failed to read line");
+        let choice = choice.trim();
 
-        let diff_sqrt_colored = if diff_sqrt < 5.0 {
-            format!("{:.6}%", diff_sqrt).green()
-        } else if diff_sqrt < 15.0 {
-            format!("{:.6}%", diff_sqrt).yellow()
-        } else {
-            format!("{:.6}%", diff_sqrt).red()
-        };
+        match choice {
+            "1" => {
+                print!("{} ", "->".green());
+                std::io::stdout().flush().unwrap();
+                let mut input = String::new();
+                std::io::stdin()
+                    .read_line(&mut input)
+                    .expect("Failed to read line");
+                if let Ok(num) = input.trim().parse::<f64>() {
+                    let est_sqrt = final_net1.run(&[num])[0] * SQRT_TIMES as f64;
+                    let actual_sqrt = num.sqrt();
+                    let diff_sqrt =
+                        abs_diff(est_sqrt, actual_sqrt) / ((est_sqrt + actual_sqrt) / 2.) * 100.0;
 
-        println!(
-            "Estimated SQRT for {:<7.6} is {:<7.6} => Real is {:7.6} | off by {}",
-            curr_elem, est_sqrt, actual_sqrt, diff_sqrt_colored
-        );
-    }
+                    let diff_sqrt_colored = if diff_sqrt < 5.0 {
+                        format!("{:.6}%", diff_sqrt).green()
+                    } else if diff_sqrt < 15.0 {
+                        format!("{:.6}%", diff_sqrt).yellow()
+                    } else {
+                        format!("{:.6}%", diff_sqrt).red()
+                    };
 
-    for test in test.iter().take(TEST_COUNT) {
-        let curr_elem = test;
-        let est_square = final_net2.run(&[*curr_elem])[0] * SQUARE_TIMES as f64;
-        let actual_square = curr_elem * curr_elem;
-        let diff_square =
-            (abs_diff(est_square, actual_square) / ((est_square + actual_square) / 2.)) * 100.;
+                    println!(
+                        "Estimated SQRT for {:<7.6} is {:<7.6} => Real is {:7.6} | off by {}",
+                        num, est_sqrt, actual_sqrt, diff_sqrt_colored
+                    );
+                } else {
+                    println!("Invalid number entered");
+                }
+            }
+            "2" => {
+                print!("{} ", "->".green());
+                std::io::stdout().flush().unwrap();
+                let mut input = String::new();
+                std::io::stdin()
+                    .read_line(&mut input)
+                    .expect("Failed to read line");
+                if let Ok(num) = input.trim().parse::<f64>() {
+                    let est_square = final_net2.run(&[num])[0] * SQUARE_TIMES as f64;
+                    let actual_square = num * num;
+                    let diff_square = abs_diff(est_square, actual_square)
+                        / ((est_square + actual_square) / 2.)
+                        * 100.0;
 
-        let diff_square_colored = if diff_square < 5.0 {
-            format!("{:.6}%", diff_square).green()
-        } else if diff_square < 15.0 {
-            format!("{:.6}%", diff_square).yellow()
-        } else {
-            format!("{:.6}%", diff_square).red()
-        };
+                    let diff_square_colored = if diff_square < 5.0 {
+                        format!("{:.6}%", diff_square).green()
+                    } else if diff_square < 15.0 {
+                        format!("{:.6}%", diff_square).yellow()
+                    } else {
+                        format!("{:.6}%", diff_square).red()
+                    };
 
-        println!(
-            "Estimated SQUARE for {:<7.6} is {:<7.6} => Real is {:7.6} | off by {}",
-            curr_elem, est_square, actual_square, diff_square_colored
-        );
+                    println!(
+                        "Estimated SQUARE for {:<7.6} is {:<7.6} => Real is {:7.6} | off by {}",
+                        num, est_square, actual_square, diff_square_colored
+                    );
+                } else {
+                    println!("Invalid number entered");
+                }
+            }
+            "3" => break,
+            _ => println!("Invalid option, please choose 1, 2, or 3"),
+        }
     }
 }
