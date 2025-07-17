@@ -7,13 +7,11 @@ const SQRT_TIMES: usize = 100;
 const SQUARE_TIMES: usize = 100;
 const SQRT_TRAINING_LOOPS: usize = 200000;
 const SQUARE_TRAINING_LOOPS: usize = 200000;
-const SQRT_LEARNING_RATE: f64 = 4.0;
-const SQUARE_LEARNING_RATE: f64 = 6.0;
 const TEST_COUNT: usize = 50;
 const PROGRESS_BAR_LENGTH: usize = 50;
 const LOOKUP_SIZE: usize = 4096;
-const SIGMOID_DOM_MIN: f64 = -15.0;
-const SIGMOID_DOM_MAX: f64 = 15.0;
+const SIGMOID_DOM_MIN: Fixed = -15 * FIXED_ONE;
+const SIGMOID_DOM_MAX: Fixed = 15 * FIXED_ONE;
 
 const ANSI_RESET: &str = "\x1b[0m";
 const ANSI_BOLD: &str = "\x1b[1m";
@@ -24,7 +22,31 @@ const ANSI_YELLOW: &str = "\x1b[33m";
 const ANSI_BLUE: &str = "\x1b[34m";
 const ANSI_BRIGHT_RED: &str = "\x1b[91m";
 
-type ActivationFunction = fn(f64) -> f64;
+type ActivationFunction = fn(Fixed) -> Fixed;
+
+type Fixed = i32;
+const FIXED_SHIFT: u32 = 16;
+const FIXED_ONE: Fixed = 1 << FIXED_SHIFT;
+const FIXED_ZERO: Fixed = 0;
+
+#[inline]
+fn fixed_mul(a: Fixed, b: Fixed) -> Fixed {
+    ((a as i64 * b as i64) >> FIXED_SHIFT) as Fixed
+}
+
+#[inline]
+fn fixed_div(a: Fixed, b: Fixed) -> Fixed {
+    (((a as i64) << FIXED_SHIFT) / b as i64) as Fixed
+}
+
+fn to_fixed_i(x: i32) -> Fixed {
+    x << FIXED_SHIFT
+}
+
+fn sigmoid_approx(x: Fixed) -> Fixed {
+    let abs_x = if x < 0 { -x } else { x };
+    fixed_div(x, FIXED_ONE + abs_x)
+}
 
 #[derive(Debug, Clone)]
 struct NeuralNetwork {
@@ -34,11 +56,11 @@ struct NeuralNetwork {
     outputs: usize,
     activation_hidden: ActivationFunction,
     activation_output: ActivationFunction,
-    weights: Vec<f64>,
-    outputs_buffer: Vec<f64>,
-    delta: Vec<f64>,
-    sigmoid_lookup: [f64; LOOKUP_SIZE],
-    sigmoid_interval: f64,
+    weights: Vec<Fixed>,
+    outputs_buffer: Vec<Fixed>,
+    delta: Vec<Fixed>,
+    sigmoid_lookup: [Fixed; LOOKUP_SIZE],
+    sigmoid_interval: Fixed,
 }
 
 impl NeuralNetwork {
@@ -77,11 +99,11 @@ impl NeuralNetwork {
             outputs,
             activation_hidden: sigmoid,
             activation_output: sigmoid,
-            weights: vec![0.0; total_weights],
-            outputs_buffer: vec![0.0; total_neurons],
-            delta: vec![0.0; total_neurons - inputs],
-            sigmoid_lookup: [0.0; LOOKUP_SIZE],
-            sigmoid_interval: 0.0,
+            weights: vec![0 * FIXED_ONE; total_weights],
+            outputs_buffer: vec![0 * FIXED_ONE; total_neurons],
+            delta: vec![0 * FIXED_ONE; total_neurons - inputs],
+            sigmoid_lookup: [0 * FIXED_ONE; LOOKUP_SIZE],
+            sigmoid_interval: 0 * FIXED_ONE,
         };
 
         nn.randomize();
@@ -93,52 +115,82 @@ impl NeuralNetwork {
     fn randomize(&mut self) {
         let mut rng = rand::rng();
         for weight in &mut self.weights {
-            *weight = rng.random::<f64>() - 0.5;
+            let rand_u32 = rng.random::<u32>();
+            let rand_fixed = (rand_u32 % (FIXED_ONE as u32)) as i32 - (FIXED_ONE / 2);
+            *weight = rand_fixed;
         }
     }
 
     fn init_sigmoid_lookup(&mut self) {
-        let f = (SIGMOID_DOM_MAX - SIGMOID_DOM_MIN) / LOOKUP_SIZE as f64;
-        self.sigmoid_interval = LOOKUP_SIZE as f64 / (SIGMOID_DOM_MAX - SIGMOID_DOM_MIN);
-
+        let range = SIGMOID_DOM_MAX - SIGMOID_DOM_MIN;
         for i in 0..LOOKUP_SIZE {
-            let x = SIGMOID_DOM_MIN + f * i as f64;
-            self.sigmoid_lookup[i] = 1.0 / (1.0 + (-x).exp());
-        }
-    }
+            let a = range;
 
-    fn sigmoid_cached(&self, a: f64) -> f64 {
-        if a < SIGMOID_DOM_MIN {
+            let x: Fixed = SIGMOID_DOM_MIN
+                + fixed_mul(
+                    a,
+                    to_fixed_i(i as i32) / to_fixed_i((LOOKUP_SIZE - 1) as i32),
+                );
+            self.sigmoid_lookup[i as usize] = sigmoid_approx(x);
+        }
+
+        self.sigmoid_interval = fixed_div(to_fixed_i(LOOKUP_SIZE as i32), range);
+    }
+    fn sigmoid_cached(&self, a: Fixed) -> Fixed {
+        if a <= SIGMOID_DOM_MIN {
             return self.sigmoid_lookup[0];
         }
         if a >= SIGMOID_DOM_MAX {
-            return self.sigmoid_lookup[LOOKUP_SIZE - 1];
+            return self.sigmoid_lookup[LOOKUP_SIZE as usize - 1];
         }
 
-        let j = ((a - SIGMOID_DOM_MIN) * self.sigmoid_interval + 0.5) as usize;
-        self.sigmoid_lookup[j.min(LOOKUP_SIZE - 1)]
+        // Compute index:
+        // j = ((a - SIGMOID_DOM_MIN) * sigmoid_interval + 0.5) as usize
+
+        // sigmoid_interval is a Fixed representing:
+        // (LOOKUP_SIZE as Fixed) / (SIGMOID_DOM_MAX - SIGMOID_DOM_MIN)
+
+        // We want integer index j = round(((a - min) * interval))
+
+        // fixed_mul returns Fixed, but index j needs to be usize (integer)
+
+        let diff = a - SIGMOID_DOM_MIN;
+        let scaled = fixed_mul(diff, self.sigmoid_interval);
+
+        let scaled_rounded = scaled + (FIXED_ONE >> 1);
+
+        let mut j = (scaled_rounded >> FIXED_SHIFT) as usize;
+
+        if j >= LOOKUP_SIZE as usize {
+            j = LOOKUP_SIZE as usize - 1;
+        }
+
+        self.sigmoid_lookup[j]
     }
 
-    fn run(&mut self, inputs: &[f64]) -> &[f64] {
+    fn run(&mut self, inputs: &[Fixed]) -> &[Fixed] {
         // Copy inputs to the beginning of the outputs buffer
         self.outputs_buffer[..self.inputs].copy_from_slice(inputs);
 
         let mut weight_index = 0;
         let mut output_buffer_position = self.inputs;
 
+        // Bias multiplier in fixed point (-1.0)
+        let bias_multiplier = -FIXED_ONE;
+
         // Special case: no hidden layers (simple input-to-output network)
         if self.hidden_layers == 0 {
             let output_start_index = output_buffer_position;
 
-            // Process each output neuron
             for _ in 0..self.outputs {
-                // Start with bias weight (multiplied by -1.0 as bias input)
-                let mut neuron_sum = self.weights[weight_index] * -1.0;
+                // Start with bias weight * bias input
+                let mut neuron_sum = fixed_mul(self.weights[weight_index], bias_multiplier);
                 weight_index += 1;
 
-                // Add weighted inputs
+                // Sum weighted inputs
                 for input_idx in 0..self.inputs {
-                    neuron_sum += self.weights[weight_index] * self.outputs_buffer[input_idx];
+                    neuron_sum +=
+                        fixed_mul(self.weights[weight_index], self.outputs_buffer[input_idx]);
                     weight_index += 1;
                 }
 
@@ -150,37 +202,35 @@ impl NeuralNetwork {
             return &self.outputs_buffer[output_start_index..output_start_index + self.outputs];
         }
 
-        // Process first hidden layer (inputs to first hidden layer)
+        // Process first hidden layer (inputs -> first hidden)
         for _ in 0..self.hidden {
-            let mut neuron_sum = self.weights[weight_index] * -1.0; // Bias
+            let mut neuron_sum = fixed_mul(self.weights[weight_index], bias_multiplier);
             weight_index += 1;
 
-            // Sum weighted inputs
             for input_idx in 0..self.inputs {
-                neuron_sum += self.weights[weight_index] * self.outputs_buffer[input_idx];
+                neuron_sum += fixed_mul(self.weights[weight_index], self.outputs_buffer[input_idx]);
                 weight_index += 1;
             }
 
-            // Apply hidden layer activation and store
             self.outputs_buffer[output_buffer_position] = (self.activation_hidden)(neuron_sum);
             output_buffer_position += 1;
         }
 
-        // Process additional hidden layers (if any)
-        let mut current_layer_input_start = self.inputs; // Points to previous layer's outputs
+        // Process additional hidden layers
+        let mut current_layer_input_start = self.inputs;
         for _ in 1..self.hidden_layers {
             for _ in 0..self.hidden {
-                let mut neuron_sum = self.weights[weight_index] * -1.0; // Bias
+                let mut neuron_sum = fixed_mul(self.weights[weight_index], bias_multiplier);
                 weight_index += 1;
 
-                // Sum weighted outputs from previous layer
                 for prev_neuron_idx in 0..self.hidden {
-                    neuron_sum += self.weights[weight_index]
-                        * self.outputs_buffer[current_layer_input_start + prev_neuron_idx];
+                    neuron_sum += fixed_mul(
+                        self.weights[weight_index],
+                        self.outputs_buffer[current_layer_input_start + prev_neuron_idx],
+                    );
                     weight_index += 1;
                 }
 
-                // Apply activation and store
                 self.outputs_buffer[output_buffer_position] = (self.activation_hidden)(neuron_sum);
                 output_buffer_position += 1;
             }
@@ -190,41 +240,40 @@ impl NeuralNetwork {
         // Process output layer
         let output_start_index = output_buffer_position;
         for _ in 0..self.outputs {
-            let mut neuron_sum = self.weights[weight_index] * -1.0; // Bias
+            let mut neuron_sum = fixed_mul(self.weights[weight_index], bias_multiplier);
             weight_index += 1;
 
-            // Sum weighted outputs from last hidden layer
             for hidden_neuron_idx in 0..self.hidden {
-                neuron_sum += self.weights[weight_index]
-                    * self.outputs_buffer[current_layer_input_start + hidden_neuron_idx];
+                neuron_sum += fixed_mul(
+                    self.weights[weight_index],
+                    self.outputs_buffer[current_layer_input_start + hidden_neuron_idx],
+                );
                 weight_index += 1;
             }
 
-            // Apply output activation and store
             self.outputs_buffer[output_buffer_position] = (self.activation_output)(neuron_sum);
             output_buffer_position += 1;
         }
 
-        // Return just the output layer results
         &self.outputs_buffer[output_start_index..output_start_index + self.outputs]
     }
 
-    fn train(&mut self, inputs: &[f64], desired_outputs: &[f64], learning_rate: f64) {
+    fn train(&mut self, inputs: &[Fixed], desired_outputs: &[Fixed], learning_rate: Fixed) {
+        // Run forward pass
         self.run(inputs);
 
         let output_layer_start_idx = self.inputs + self.hidden * self.hidden_layers;
         let output_delta_start_idx = self.hidden * self.hidden_layers;
 
+        // Calculate delta for output layer
         for (output_idx, &target) in desired_outputs.iter().enumerate().take(self.outputs) {
             let neuron_output = self.outputs_buffer[output_layer_start_idx + output_idx];
             let error = target - neuron_output;
 
-            self.delta[output_delta_start_idx + output_idx] =
-                if std::ptr::fn_addr_eq(self.activation_output, linear as fn(f64) -> f64) {
-                    error
-                } else {
-                    error * neuron_output * (1.0 - neuron_output)
-                };
+            self.delta[output_delta_start_idx + output_idx] = {
+                let one_minus_o = FIXED_ONE - neuron_output;
+                fixed_mul(error, fixed_mul(neuron_output, one_minus_o))
+            };
         }
 
         // Backpropagate through hidden layers
@@ -235,12 +284,12 @@ impl NeuralNetwork {
             for neuron_idx in 0..self.hidden {
                 let neuron_output =
                     self.outputs_buffer[self.inputs + current_layer_start + neuron_idx];
-                let mut error_sum = 0.0;
+                let mut error_sum: Fixed = 0;
 
                 let next_layer_size = if layer_idx == self.hidden_layers - 1 {
-                    self.outputs // Next layer is output layer
+                    self.outputs
                 } else {
-                    self.hidden // Next layer is another hidden layer
+                    self.hidden
                 };
 
                 for next_layer_neuron in 0..next_layer_size {
@@ -253,7 +302,7 @@ impl NeuralNetwork {
                             + next_layer_neuron * (self.hidden + 1)
                             + (neuron_idx + 1)
                     } else {
-                        // Weights between two hidden layers
+                        // Weights between hidden layers
                         (self.inputs + 1) * self.hidden
                             + layer_idx * (self.hidden + 1) * self.hidden
                             + next_layer_neuron * (self.hidden + 1)
@@ -261,35 +310,37 @@ impl NeuralNetwork {
                     };
 
                     let connecting_weight = self.weights[weight_index];
-                    error_sum += next_layer_delta * connecting_weight;
+                    error_sum += fixed_mul(next_layer_delta, connecting_weight);
                 }
 
+                // delta = neuron_output * (1.0 - neuron_output) * error_sum
+                let one_minus_o = FIXED_ONE - neuron_output;
                 self.delta[current_layer_start + neuron_idx] =
-                    neuron_output * (1.0 - neuron_output) * error_sum;
+                    fixed_mul(fixed_mul(neuron_output, one_minus_o), error_sum);
             }
         }
 
+        // Update weights between last hidden layer and output layer (or input-output if no hidden)
         let mut weight_index = if self.hidden_layers > 0 {
             (self.inputs + 1) * self.hidden
                 + (self.hidden_layers - 1) * (self.hidden + 1) * self.hidden
         } else {
-            0 // No hidden layers, update input-to-output weights directly
+            0
         };
 
         let last_hidden_layer_output_start = if self.hidden_layers > 0 {
             self.inputs + self.hidden * (self.hidden_layers - 1)
         } else {
-            0 // No hidden layers, use inputs directly
+            0
         };
 
         for output_neuron_idx in 0..self.outputs {
             let delta = self.delta[self.hidden * self.hidden_layers + output_neuron_idx];
 
-            // Update bias weight
-            self.weights[weight_index] += delta * learning_rate * -1.0;
+            // Update bias weight: weights[weight_index] += delta * learning_rate * -1.0
+            self.weights[weight_index] += fixed_mul(fixed_mul(delta, learning_rate), -FIXED_ONE);
             weight_index += 1;
 
-            // Update weights from last layer neurons
             let preceding_layer_size = if self.hidden_layers > 0 {
                 self.hidden
             } else {
@@ -299,7 +350,9 @@ impl NeuralNetwork {
             for preceding_neuron_idx in 0..preceding_layer_size {
                 let preceding_neuron_output =
                     self.outputs_buffer[last_hidden_layer_output_start + preceding_neuron_idx];
-                self.weights[weight_index] += delta * learning_rate * preceding_neuron_output;
+
+                self.weights[weight_index] +=
+                    fixed_mul(fixed_mul(delta, learning_rate), preceding_neuron_output);
                 weight_index += 1;
             }
         }
@@ -307,13 +360,13 @@ impl NeuralNetwork {
         // Update weights between hidden layers (and input to first hidden layer)
         for layer_idx in (0..self.hidden_layers).rev() {
             let preceding_layer_output_start = if layer_idx == 0 {
-                0 // Input layer
+                0
             } else {
                 self.inputs + (layer_idx - 1) * self.hidden
             };
 
             let layer_weight_start_index = if layer_idx == 0 {
-                0 // Input-to-first-hidden weights
+                0
             } else {
                 (self.inputs + 1) * self.hidden + (layer_idx - 1) * (self.hidden + 1) * self.hidden
             };
@@ -329,9 +382,9 @@ impl NeuralNetwork {
 
                 // Update bias weight
                 let bias_weight_index = layer_weight_start_index + neuron_idx * weights_per_neuron;
-                self.weights[bias_weight_index] += delta * learning_rate * -1.0;
+                self.weights[bias_weight_index] +=
+                    fixed_mul(fixed_mul(delta, learning_rate), -FIXED_ONE);
 
-                // Update weights from preceding layer
                 for preceding_neuron_idx in 0..if layer_idx == 0 {
                     self.inputs
                 } else {
@@ -340,7 +393,9 @@ impl NeuralNetwork {
                     let weight_index = bias_weight_index + preceding_neuron_idx + 1;
                     let preceding_neuron_output =
                         self.outputs_buffer[preceding_layer_output_start + preceding_neuron_idx];
-                    self.weights[weight_index] += delta * learning_rate * preceding_neuron_output;
+
+                    self.weights[weight_index] +=
+                        fixed_mul(fixed_mul(delta, learning_rate), preceding_neuron_output);
                 }
             }
         }
@@ -351,32 +406,28 @@ impl NeuralNetwork {
             return;
         }
 
-        let num_networks = networks.len() as f64;
+        let num_networks = networks.len() as Fixed;
         for i in 0..self.weights.len() {
-            self.weights[i] = networks.iter().map(|net| net.weights[i]).sum::<f64>() / num_networks;
+            self.weights[i] =
+                networks.iter().map(|net| net.weights[i]).sum::<Fixed>() / num_networks;
         }
     }
 }
 
-fn sigmoid(a: f64) -> f64 {
-    if a < -45.0 {
-        0.0
-    } else if a > 45.0 {
-        1.0
-    } else {
-        1.0 / (1.0 + (-a).exp())
-    }
+fn sigmoid(a: Fixed) -> Fixed {
+    let approx = sigmoid_approx(a);
+    (approx + FIXED_ONE) / 2
 }
 
-fn linear(a: f64) -> f64 {
+fn linear(a: Fixed) -> Fixed {
     a
 }
 
-fn threshold(a: f64) -> f64 {
-    if a > 0.0 {
-        1.0
+fn threshold(a: Fixed) -> Fixed {
+    if a > 0 {
+        FIXED_ONE
     } else {
-        0.0
+        0
     }
 }
 
@@ -423,175 +474,39 @@ use std::{
 };
 
 fn main() {
-    let rng = Arc::new(Mutex::new(rand::rng()));
-    let mut test = vec![0.0; TEST_COUNT];
-    for test in test.iter_mut().take(TEST_COUNT) {
-        *test = rng.lock().unwrap().random::<f64>() * 10.0;
-    }
+    // Define XOR training data in Fixed
+    let inputs = [
+        [FIXED_ZERO, FIXED_ZERO],
+        [FIXED_ZERO, FIXED_ONE],
+        [FIXED_ONE, FIXED_ZERO],
+        [FIXED_ONE, FIXED_ONE],
+    ];
+    let expected = [FIXED_ZERO, FIXED_ONE, FIXED_ONE, FIXED_ZERO];
 
-    let sqrt_input: Vec<f64> = (0..SQRT_TIMES).map(|i| i as f64 / 10.0).collect();
-    let sqrt_output: Vec<f64> = sqrt_input
-        .iter()
-        .map(|&x| x.sqrt() * (1.0 / SQRT_TIMES as f64))
-        .collect();
+    let mut net = NeuralNetwork::new(2, 1, 4, 1).unwrap(); // small network for XOR
+    let learning_rate = FIXED_ONE / 4; // e.g., 0.25 in fixed point
 
-    let square_input: Vec<f64> = (0..SQUARE_TIMES)
-        .map(|i| (i as f64 / SQUARE_TIMES as f64) * 10.0)
-        .collect();
-    let square_output: Vec<f64> = square_input
-        .iter()
-        .map(|&x| x.powi(2) * (1.0 / SQUARE_TIMES as f64))
-        .collect();
-
-    let net1 = Arc::new(Mutex::new(NeuralNetwork::new(1, 1, 13, 1).unwrap()));
-    let net2 = Arc::new(Mutex::new(NeuralNetwork::new(1, 1, 13, 1).unwrap()));
-    let num_threads = num_cpus::get();
-
-    let pb = ProgressBar::new(
-        ((SQUARE_TRAINING_LOOPS / num_threads + SQRT_TRAINING_LOOPS / num_threads) * num_threads)
-            as u64,
-    );
-    pb.set_style(
-        ProgressStyle::default_bar()
-            .template("[{elapsed_precise}] [{wide_bar:.cyan/blue}] {pos}/{len} Iters")
-            .unwrap()
-            .progress_chars("█░"),
-    );
-
-    let threads: Vec<_> = (0..num_threads)
-        .map(|_| {
-            let net1_clone = Arc::clone(&net1);
-            let net2_clone = Arc::clone(&net2);
-            let sqrt_input = sqrt_input.clone();
-            let sqrt_output = sqrt_output.clone();
-            let square_input = square_input.clone();
-            let square_output = square_output.clone();
-            let pb = pb.clone();
-
-            thread::spawn(move || {
-                let mut net1_local = net1_clone.lock().unwrap().clone();
-                let mut net2_local = net2_clone.lock().unwrap().clone();
-
-                for _ in 0..(SQRT_TRAINING_LOOPS / num_threads) {
-                    for j in 0..SQRT_TIMES {
-                        net1_local.train(&[sqrt_input[j]], &[sqrt_output[j]], SQRT_LEARNING_RATE);
-                    }
-                    pb.inc(1);
-                }
-
-                for _ in 0..(SQUARE_TRAINING_LOOPS / num_threads) {
-                    for j in 0..SQUARE_TIMES {
-                        net2_local.train(
-                            &[square_input[j]],
-                            &[square_output[j]],
-                            SQUARE_LEARNING_RATE,
-                        );
-                    }
-                    pb.inc(1);
-                }
-
-                (net1_local, net2_local)
-            })
-        })
-        .collect();
-
-    let mut nets1_results = vec![];
-    let mut nets2_results = vec![];
-
-    for handle in threads {
-        let (net1_trained, net2_trained) = handle.join().unwrap();
-        nets1_results.push(net1_trained);
-        nets2_results.push(net2_trained);
-    }
-
-    pb.finish_with_message("Training Complete!");
-
-    let mut final_net1 = net1.lock().unwrap();
-    let mut final_net2 = net2.lock().unwrap();
-    final_net1.average_from(&nets1_results);
-    final_net2.average_from(&nets2_results);
-
-    loop {
-        println!("\nChoose an option:");
-        println!("1. Estimate square root");
-        println!("2. Estimate square");
-        print!("3. Exit\n{} ", ">".green());
-        std::io::stdout().flush().unwrap();
-        let mut choice = String::new();
-        std::io::stdin()
-            .read_line(&mut choice)
-            .expect("Failed to read line");
-        let choice = choice.trim();
-
-        match choice {
-            "1" => {
-                print!("{} ", "->".green());
-                std::io::stdout().flush().unwrap();
-                let mut input = String::new();
-                std::io::stdin()
-                    .read_line(&mut input)
-                    .expect("Failed to read line");
-                if let Ok(num) = input.trim().parse::<f64>() {
-                    let est_sqrt = final_net1.run(&[num])[0] * SQRT_TIMES as f64;
-                    let actual_sqrt = num.sqrt();
-                    let diff_sqrt =
-                        abs_diff(est_sqrt, actual_sqrt) / ((est_sqrt + actual_sqrt) / 2.) * 100.0;
-
-                    let diff_sqrt_colored = if diff_sqrt < 5.0 {
-                        format!("{:.6}%", diff_sqrt).green()
-                    } else if diff_sqrt < 15.0 {
-                        format!("{:.6}%", diff_sqrt).yellow()
-                    } else {
-                        format!("{:.6}%", diff_sqrt).red()
-                    };
-
-                    println!(
-                        "Estimated SQRT for {:<7.6} is {:<7.6} => Real is {:7.6} | off by {}",
-                        num, est_sqrt, actual_sqrt, diff_sqrt_colored
-                    );
-                } else {
-                    println!("Invalid number entered");
-                }
-            }
-            "2" => {
-                print!("{} ", "->".green());
-                std::io::stdout().flush().unwrap();
-                let mut input = String::new();
-                std::io::stdin()
-                    .read_line(&mut input)
-                    .expect("Failed to read line");
-                if let Ok(num) = input.trim().parse::<f64>() {
-                    use std::arch::x86_64::_rdtsc;
-
-                    let tsc = unsafe { _rdtsc() };
-                    let est_square = final_net2.run(&[num])[0];
-                    println!("Running took {} clock cycles", unsafe { _rdtsc() - tsc });
-
-                    let est_square = est_square * SQUARE_TIMES as f64;
-
-                    let actual_square = num * num;
-                    let diff_square = abs_diff(est_square, actual_square)
-                        / ((est_square + actual_square) / 2.)
-                        * 100.0;
-
-                    let diff_square_colored = if diff_square < 5.0 {
-                        format!("{:.6}%", diff_square).green()
-                    } else if diff_square < 15.0 {
-                        format!("{:.6}%", diff_square).yellow()
-                    } else {
-                        format!("{:.6}%", diff_square).red()
-                    };
-
-                    println!(
-                        "Estimated SQUARE for {:<7.6} is {:<7.6} => Real is {:7.6} | off by {}",
-                        num, est_square, actual_square, diff_square_colored
-                    );
-                } else {
-                    println!("Invalid number entered");
-                }
-            }
-            "3" => break,
-            _ => println!("Invalid option, please choose 1, 2, or 3"),
+    // Train for some iterations
+    for _ in 0..10_000 {
+        for i in 0..inputs.len() {
+            net.train(&inputs[i], &[expected[i]], learning_rate);
         }
+    }
+
+    // Test network
+    for i in 0..inputs.len() {
+        let tsc = unsafe { std::arch::x86_64::_rdtsc() };
+        let output = net.run(&inputs[i])[0];
+        println!("Took {} clock cycles", unsafe {
+            std::arch::x86_64::_rdtsc() - tsc
+        });
+        let predicted = if output > FIXED_ONE / 2 { 1 } else { 0 };
+        println!(
+            "Input: {:?}, Output (fixed): {}, Predicted: {}, Expected: {}",
+            &inputs[i],
+            output,
+            predicted,
+            expected[i] / FIXED_ONE
+        );
     }
 }
