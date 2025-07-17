@@ -120,75 +120,93 @@ impl NeuralNetwork {
     }
 
     fn run(&mut self, inputs: &[f64]) -> &[f64] {
+        // Copy inputs to the beginning of the outputs buffer
         self.outputs_buffer[..self.inputs].copy_from_slice(inputs);
 
-        let mut weight_idx = 0;
-        let mut output_idx = self.inputs;
+        let mut weight_index = 0;
+        let mut output_buffer_position = self.inputs;
 
+        // Special case: no hidden layers (simple input-to-output network)
         if self.hidden_layers == 0 {
-            let result_idx = output_idx;
+            let output_start_index = output_buffer_position;
 
+            // Process each output neuron
             for _ in 0..self.outputs {
-                let mut sum = self.weights[weight_idx] * -1.0;
-                weight_idx += 1;
+                // Start with bias weight (multiplied by -1.0 as bias input)
+                let mut neuron_sum = self.weights[weight_index] * -1.0;
+                weight_index += 1;
 
-                for k in 0..self.inputs {
-                    sum += self.weights[weight_idx] * self.outputs_buffer[k];
-                    weight_idx += 1;
+                // Add weighted inputs
+                for input_idx in 0..self.inputs {
+                    neuron_sum += self.weights[weight_index] * self.outputs_buffer[input_idx];
+                    weight_index += 1;
                 }
 
-                self.outputs_buffer[output_idx] = (self.activation_output)(sum);
-                output_idx += 1;
+                // Apply activation function and store result
+                self.outputs_buffer[output_buffer_position] = (self.activation_output)(neuron_sum);
+                output_buffer_position += 1;
             }
 
-            return &self.outputs_buffer[result_idx..result_idx + self.outputs];
+            return &self.outputs_buffer[output_start_index..output_start_index + self.outputs];
         }
 
+        // Process first hidden layer (inputs to first hidden layer)
         for _ in 0..self.hidden {
-            let mut sum = self.weights[weight_idx] * -1.0;
-            weight_idx += 1;
+            let mut neuron_sum = self.weights[weight_index] * -1.0; // Bias
+            weight_index += 1;
 
-            for k in 0..self.inputs {
-                sum += self.weights[weight_idx] * self.outputs_buffer[k];
-                weight_idx += 1;
+            // Sum weighted inputs
+            for input_idx in 0..self.inputs {
+                neuron_sum += self.weights[weight_index] * self.outputs_buffer[input_idx];
+                weight_index += 1;
             }
 
-            self.outputs_buffer[output_idx] = (self.activation_hidden)(sum);
-            output_idx += 1;
+            // Apply hidden layer activation and store
+            self.outputs_buffer[output_buffer_position] = (self.activation_hidden)(neuron_sum);
+            output_buffer_position += 1;
         }
 
-        let mut input_idx = self.inputs;
+        // Process additional hidden layers (if any)
+        let mut current_layer_input_start = self.inputs; // Points to previous layer's outputs
         for _ in 1..self.hidden_layers {
             for _ in 0..self.hidden {
-                let mut sum = self.weights[weight_idx] * -1.0;
-                weight_idx += 1;
+                let mut neuron_sum = self.weights[weight_index] * -1.0; // Bias
+                weight_index += 1;
 
-                for k in 0..self.hidden {
-                    sum += self.weights[weight_idx] * self.outputs_buffer[input_idx + k];
-                    weight_idx += 1;
+                // Sum weighted outputs from previous layer
+                for prev_neuron_idx in 0..self.hidden {
+                    neuron_sum += self.weights[weight_index]
+                        * self.outputs_buffer[current_layer_input_start + prev_neuron_idx];
+                    weight_index += 1;
                 }
 
-                self.outputs_buffer[output_idx] = (self.activation_hidden)(sum);
-                output_idx += 1;
+                // Apply activation and store
+                self.outputs_buffer[output_buffer_position] = (self.activation_hidden)(neuron_sum);
+                output_buffer_position += 1;
             }
-            input_idx += self.hidden;
+            current_layer_input_start += self.hidden;
         }
 
-        let result_idx = output_idx;
+        // Process output layer
+        let output_start_index = output_buffer_position;
         for _ in 0..self.outputs {
-            let mut sum = self.weights[weight_idx] * -1.0;
-            weight_idx += 1;
+            let mut neuron_sum = self.weights[weight_index] * -1.0; // Bias
+            weight_index += 1;
 
-            for k in 0..self.hidden {
-                sum += self.weights[weight_idx] * self.outputs_buffer[input_idx + k];
-                weight_idx += 1;
+            // Sum weighted outputs from last hidden layer
+            for hidden_neuron_idx in 0..self.hidden {
+                neuron_sum += self.weights[weight_index]
+                    * self.outputs_buffer[current_layer_input_start + hidden_neuron_idx];
+                weight_index += 1;
             }
 
-            self.outputs_buffer[output_idx] = (self.activation_output)(sum);
-            output_idx += 1;
+            // Apply output activation and store
+            self.outputs_buffer[output_buffer_position] = (self.activation_output)(neuron_sum);
+            output_buffer_position += 1;
         }
 
-        &self.outputs_buffer[result_idx..result_idx + self.outputs]
+        // Return just the output layer results
+        &self.outputs_buffer[output_start_index..output_start_index + self.outputs]
     }
 
     fn train(&mut self, inputs: &[f64], desired_outputs: &[f64], learning_rate: f64) {
