@@ -1,26 +1,8 @@
-#![allow(unused)]
 use rand::Rng;
-use std::io::Write;
-use std::time::{SystemTime, UNIX_EPOCH};
 
-const SQRT_TIMES: usize = 100;
-const SQUARE_TIMES: usize = 100;
-const SQRT_TRAINING_LOOPS: usize = 200000;
-const SQUARE_TRAINING_LOOPS: usize = 200000;
-const TEST_COUNT: usize = 50;
-const PROGRESS_BAR_LENGTH: usize = 50;
 const LOOKUP_SIZE: usize = 4096;
 const SIGMOID_DOM_MIN: Fixed = -15 * FIXED_ONE;
 const SIGMOID_DOM_MAX: Fixed = 15 * FIXED_ONE;
-
-const ANSI_RESET: &str = "\x1b[0m";
-const ANSI_BOLD: &str = "\x1b[1m";
-const ANSI_UNDERLINE: &str = "\x1b[4m";
-const ANSI_RED: &str = "\x1b[31m";
-const ANSI_GREEN: &str = "\x1b[32m";
-const ANSI_YELLOW: &str = "\x1b[33m";
-const ANSI_BLUE: &str = "\x1b[34m";
-const ANSI_BRIGHT_RED: &str = "\x1b[91m";
 
 type ActivationFunction = fn(Fixed) -> Fixed;
 
@@ -135,37 +117,6 @@ impl NeuralNetwork {
         }
 
         self.sigmoid_interval = fixed_div(to_fixed_i(LOOKUP_SIZE as i32), range);
-    }
-    fn sigmoid_cached(&self, a: Fixed) -> Fixed {
-        if a <= SIGMOID_DOM_MIN {
-            return self.sigmoid_lookup[0];
-        }
-        if a >= SIGMOID_DOM_MAX {
-            return self.sigmoid_lookup[LOOKUP_SIZE as usize - 1];
-        }
-
-        // Compute index:
-        // j = ((a - SIGMOID_DOM_MIN) * sigmoid_interval + 0.5) as usize
-
-        // sigmoid_interval is a Fixed representing:
-        // (LOOKUP_SIZE as Fixed) / (SIGMOID_DOM_MAX - SIGMOID_DOM_MIN)
-
-        // We want integer index j = round(((a - min) * interval))
-
-        // fixed_mul returns Fixed, but index j needs to be usize (integer)
-
-        let diff = a - SIGMOID_DOM_MIN;
-        let scaled = fixed_mul(diff, self.sigmoid_interval);
-
-        let scaled_rounded = scaled + (FIXED_ONE >> 1);
-
-        let mut j = (scaled_rounded >> FIXED_SHIFT) as usize;
-
-        if j >= LOOKUP_SIZE as usize {
-            j = LOOKUP_SIZE as usize - 1;
-        }
-
-        self.sigmoid_lookup[j]
     }
 
     fn run(&mut self, inputs: &[Fixed]) -> &[Fixed] {
@@ -400,81 +351,13 @@ impl NeuralNetwork {
             }
         }
     }
-
-    fn average_from(&mut self, networks: &[NeuralNetwork]) {
-        if networks.is_empty() {
-            return;
-        }
-
-        let num_networks = networks.len() as Fixed;
-        for i in 0..self.weights.len() {
-            self.weights[i] =
-                networks.iter().map(|net| net.weights[i]).sum::<Fixed>() / num_networks;
-        }
-    }
 }
 
 fn sigmoid(a: Fixed) -> Fixed {
     let approx = sigmoid_approx(a);
     (approx + FIXED_ONE) / 2
 }
-
-fn linear(a: Fixed) -> Fixed {
-    a
-}
-
-fn threshold(a: Fixed) -> Fixed {
-    if a > 0 {
-        FIXED_ONE
-    } else {
-        0
-    }
-}
-
-fn print_loading_bar(progress: f64) {
-    let filled_length = (progress * PROGRESS_BAR_LENGTH as f64) as usize;
-    print!("[");
-    for i in 0..PROGRESS_BAR_LENGTH {
-        if i < filled_length {
-            print!("#");
-        } else {
-            print!(" ");
-        }
-    }
-    print!("] {:.0}%\r", progress * 100.0);
-    std::io::stdout().flush().unwrap();
-}
-
-fn abs_diff(a: f64, b: f64) -> f64 {
-    (a - b).abs()
-}
-
-fn print_timestamp() {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-    let local = chrono::DateTime::from_timestamp(now as i64, 0);
-    println!("[{}]: ", local.unwrap().format("%Y-%m-%d %H:%M:%S"));
-}
-
-fn print_info(msg: &str) {
-    println!("[{}INFO{}]: {}", ANSI_YELLOW, ANSI_RESET, msg);
-}
-
-fn print_data(msg: &str) {
-    println!("[{}DATA{}]: {}", ANSI_BRIGHT_RED, ANSI_RESET, msg);
-}
-
-use colored::*;
-use indicatif::{ProgressBar, ProgressStyle};
-use std::{
-    sync::{Arc, Mutex},
-    thread,
-};
-
 fn main() {
-    // Define XOR training data in Fixed
     let inputs = [
         [FIXED_ZERO, FIXED_ZERO],
         [FIXED_ZERO, FIXED_ONE],
@@ -484,16 +367,14 @@ fn main() {
     let expected = [FIXED_ZERO, FIXED_ONE, FIXED_ONE, FIXED_ZERO];
 
     let mut net = NeuralNetwork::new(2, 1, 4, 1).unwrap(); // small network for XOR
-    let learning_rate = FIXED_ONE / 4; // e.g., 0.25 in fixed point
+    let learning_rate = FIXED_ONE / 4;
 
-    // Train for some iterations
     for _ in 0..10_000 {
         for i in 0..inputs.len() {
             net.train(&inputs[i], &[expected[i]], learning_rate);
         }
     }
 
-    // Test network
     for i in 0..inputs.len() {
         let tsc = unsafe { std::arch::x86_64::_rdtsc() };
         let output = net.run(&inputs[i])[0];
