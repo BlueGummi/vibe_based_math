@@ -194,123 +194,140 @@ impl NeuralNetwork {
     fn train(&mut self, inputs: &[f64], desired_outputs: &[f64], learning_rate: f64) {
         self.run(inputs);
 
-        let output_start = self.inputs + self.hidden * self.hidden_layers;
-        let delta_start = self.hidden * self.hidden_layers;
+        let output_layer_start_idx = self.inputs + self.hidden * self.hidden_layers;
+        let output_delta_start_idx = self.hidden * self.hidden_layers;
 
-        for (index, element) in desired_outputs.iter().enumerate().take(self.outputs) {
-            let o = self.outputs_buffer[output_start + index];
-            let error = element - o;
+        for (output_idx, &target) in desired_outputs.iter().enumerate().take(self.outputs) {
+            let neuron_output = self.outputs_buffer[output_layer_start_idx + output_idx];
+            let error = target - neuron_output;
 
-            self.delta[delta_start + index] =
+            self.delta[output_delta_start_idx + output_idx] =
                 if std::ptr::fn_addr_eq(self.activation_output, linear as fn(f64) -> f64) {
                     error
                 } else {
-                    error * o * (1.0 - o)
+                    error * neuron_output * (1.0 - neuron_output)
                 };
         }
 
-        for h in (0..self.hidden_layers).rev() {
-            let layer_start = h * self.hidden;
-            let next_layer_start = (h + 1) * self.hidden;
+        // Backpropagate through hidden layers
+        for layer_idx in (0..self.hidden_layers).rev() {
+            let current_layer_start = layer_idx * self.hidden;
+            let next_layer_start = (layer_idx + 1) * self.hidden;
 
-            for j in 0..self.hidden {
-                let o = self.outputs_buffer[self.inputs + layer_start + j];
-                let mut delta = 0.0;
+            for neuron_idx in 0..self.hidden {
+                let neuron_output =
+                    self.outputs_buffer[self.inputs + current_layer_start + neuron_idx];
+                let mut error_sum = 0.0;
 
-                let neurons_in_next_layer = if h == self.hidden_layers - 1 {
-                    self.outputs
+                let next_layer_size = if layer_idx == self.hidden_layers - 1 {
+                    self.outputs // Next layer is output layer
                 } else {
-                    self.hidden
+                    self.hidden // Next layer is another hidden layer
                 };
 
-                for k in 0..neurons_in_next_layer {
-                    let forward_delta = self.delta[next_layer_start + k];
-                    let weight_idx = if h == self.hidden_layers - 1 {
+                for next_layer_neuron in 0..next_layer_size {
+                    let next_layer_delta = self.delta[next_layer_start + next_layer_neuron];
+
+                    let weight_index = if layer_idx == self.hidden_layers - 1 {
+                        // Weights between last hidden layer and output layer
                         (self.inputs + 1) * self.hidden
                             + (self.hidden_layers - 1) * (self.hidden + 1) * self.hidden
-                            + k * (self.hidden + 1)
-                            + (j + 1)
+                            + next_layer_neuron * (self.hidden + 1)
+                            + (neuron_idx + 1)
                     } else {
+                        // Weights between two hidden layers
                         (self.inputs + 1) * self.hidden
-                            + h * (self.hidden + 1) * self.hidden
-                            + k * (self.hidden + 1)
-                            + (j + 1)
+                            + layer_idx * (self.hidden + 1) * self.hidden
+                            + next_layer_neuron * (self.hidden + 1)
+                            + (neuron_idx + 1)
                     };
 
-                    let forward_weight = self.weights[weight_idx];
-                    delta += forward_delta * forward_weight;
+                    let connecting_weight = self.weights[weight_index];
+                    error_sum += next_layer_delta * connecting_weight;
                 }
 
-                self.delta[layer_start + j] = o * (1.0 - o) * delta;
+                self.delta[current_layer_start + neuron_idx] =
+                    neuron_output * (1.0 - neuron_output) * error_sum;
             }
         }
 
-        let mut weight_idx = if self.hidden_layers > 0 {
+        let mut weight_index = if self.hidden_layers > 0 {
             (self.inputs + 1) * self.hidden
                 + (self.hidden_layers - 1) * (self.hidden + 1) * self.hidden
         } else {
-            0
+            0 // No hidden layers, update input-to-output weights directly
         };
 
-        let input_start = if self.hidden_layers > 0 {
-            self.inputs + (self.hidden) * (self.hidden_layers - 1)
+        let last_hidden_layer_output_start = if self.hidden_layers > 0 {
+            self.inputs + self.hidden * (self.hidden_layers - 1)
         } else {
-            0
+            0 // No hidden layers, use inputs directly
         };
 
-        for j in 0..self.outputs {
-            let d = self.delta[self.hidden * self.hidden_layers + j];
-            self.weights[weight_idx] += d * learning_rate * -1.0;
-            weight_idx += 1;
+        for output_neuron_idx in 0..self.outputs {
+            let delta = self.delta[self.hidden * self.hidden_layers + output_neuron_idx];
 
-            let input_count = if self.hidden_layers > 0 {
+            // Update bias weight
+            self.weights[weight_index] += delta * learning_rate * -1.0;
+            weight_index += 1;
+
+            // Update weights from last layer neurons
+            let preceding_layer_size = if self.hidden_layers > 0 {
                 self.hidden
             } else {
                 self.inputs
             };
 
-            for k in 0..input_count {
-                self.weights[weight_idx] +=
-                    d * learning_rate * self.outputs_buffer[input_start + k];
-                weight_idx += 1;
+            for preceding_neuron_idx in 0..preceding_layer_size {
+                let preceding_neuron_output =
+                    self.outputs_buffer[last_hidden_layer_output_start + preceding_neuron_idx];
+                self.weights[weight_index] += delta * learning_rate * preceding_neuron_output;
+                weight_index += 1;
             }
         }
 
-        for h in (0..self.hidden_layers).rev() {
-            let input_start = if h == 0 {
-                0
+        // Update weights between hidden layers (and input to first hidden layer)
+        for layer_idx in (0..self.hidden_layers).rev() {
+            let preceding_layer_output_start = if layer_idx == 0 {
+                0 // Input layer
             } else {
-                self.inputs + (h - 1) * self.hidden
+                self.inputs + (layer_idx - 1) * self.hidden
             };
 
-            let weight_idx = if h == 0 {
-                0
+            let layer_weight_start_index = if layer_idx == 0 {
+                0 // Input-to-first-hidden weights
             } else {
-                (self.inputs + 1) * self.hidden + (h - 1) * (self.hidden + 1) * self.hidden
+                (self.inputs + 1) * self.hidden + (layer_idx - 1) * (self.hidden + 1) * self.hidden
             };
 
-            for j in 0..self.hidden {
-                let d = self.delta[h * self.hidden + j];
-                self.weights[weight_idx
-                    + j * (if h == 0 {
-                        self.inputs + 1
-                    } else {
-                        self.hidden + 1
-                    })] += d * learning_rate * -1.0;
+            for neuron_idx in 0..self.hidden {
+                let delta = self.delta[layer_idx * self.hidden + neuron_idx];
 
-                for k in 0..if h == 0 { self.inputs } else { self.hidden } {
-                    self.weights[weight_idx
-                        + j * (if h == 0 {
-                            self.inputs + 1
-                        } else {
-                            self.hidden + 1
-                        })
-                        + k
-                        + 1] += d * learning_rate * self.outputs_buffer[input_start + k];
+                let weights_per_neuron = if layer_idx == 0 {
+                    self.inputs + 1
+                } else {
+                    self.hidden + 1
+                };
+
+                // Update bias weight
+                let bias_weight_index = layer_weight_start_index + neuron_idx * weights_per_neuron;
+                self.weights[bias_weight_index] += delta * learning_rate * -1.0;
+
+                // Update weights from preceding layer
+                for preceding_neuron_idx in 0..if layer_idx == 0 {
+                    self.inputs
+                } else {
+                    self.hidden
+                } {
+                    let weight_index = bias_weight_index + preceding_neuron_idx + 1;
+                    let preceding_neuron_output =
+                        self.outputs_buffer[preceding_layer_output_start + preceding_neuron_idx];
+                    self.weights[weight_index] += delta * learning_rate * preceding_neuron_output;
                 }
             }
         }
     }
+
     fn average_from(&mut self, networks: &[NeuralNetwork]) {
         if networks.is_empty() {
             return;
@@ -338,7 +355,11 @@ fn linear(a: f64) -> f64 {
 }
 
 fn threshold(a: f64) -> f64 {
-    if a > 0.0 { 1.0 } else { 0.0 }
+    if a > 0.0 {
+        1.0
+    } else {
+        0.0
+    }
 }
 
 fn print_loading_bar(progress: f64) {
@@ -522,7 +543,14 @@ fn main() {
                     .read_line(&mut input)
                     .expect("Failed to read line");
                 if let Ok(num) = input.trim().parse::<f64>() {
-                    let est_square = final_net2.run(&[num])[0] * SQUARE_TIMES as f64;
+                    use std::arch::x86_64::_rdtsc;
+
+                    let tsc = unsafe { _rdtsc() };
+                    let est_square = final_net2.run(&[num])[0];
+                    println!("Running took {} clock cycles", unsafe { _rdtsc() - tsc });
+
+                    let est_square = est_square * SQUARE_TIMES as f64;
+
                     let actual_square = num * num;
                     let diff_square = abs_diff(est_square, actual_square)
                         / ((est_square + actual_square) / 2.)
